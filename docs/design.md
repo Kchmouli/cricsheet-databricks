@@ -613,3 +613,27 @@ All three carry full table + column COMMENTs (Genie reads these as context).
 1. Phase views (`game_phase` powerplay/middle/death + `batting_by_phase`/`bowling_by_phase`) — unlocks powerplay/death questions. Needs the 7th convention (death=overs 16-20 for T20, not in source) encoded.
 2. Weekly `all_json` reconciliation job + staleness assert + failure email (operational reliability).
 3. `venue_country` enrichment + home/away (pattern 6), `batting_vs_bowler` (pattern 4) — heavier lifts, deferred.
+
+## 18. Innings-phase model (built)
+
+Phase analysis (powerplay / middle / death) required distinguishing two genuinely different concepts, which is the crux of the design:
+
+**Powerplay = authoritative, from source.** Cricsheet records the actual `powerplays` array per innings (`from`/`to`/`type` where type ∈ mandatory/batting/fielding). Boundaries vary — a rain-shortened T20 may have a 4-over powerplay, an old ODI may tag most of the innings as mandatory powerplay, modern ODIs have a discretionary batting powerplay mid-innings. So powerplay is NEVER hardcoded to "overs 1-6"; it comes from the parsed source (`silver.ball_phase` → `phase_key`), per-innings-correct. This was built early and deliberately kept "authoritative only".
+
+**Death = a convention, NOT in source.** "Death overs" is an analyst definition, format-specific: T20 = last 5 overs (16-20), ODI = last 10 (41-50). Chosen conventions locked: T20 death fraction 0.25, ODI 0.20.
+
+**`over_phase` column on `fact_ball`** combines them per ball, priority **death → powerplay → middle → N/A**:
+- **Death first** (by over position) — wins the tail even when a powerplay is tagged there. This is essential for ODIs, where the late/discretionary powerplay sits *inside* the death window (overs 41-50 are death, not powerplay). Death-first gives the correct answer for both formats (T20 has no overlap; ODI does).
+- **Then powerplay** from source (`phase_key` starts with 'PP') — claims the early fielding-restriction overs.
+- **Then middle** — everything else. **N/A** for non-T20/ODI.
+
+**Length-flexing + the mislabelled-games guard:**
+- `full_len` derived from `match_format` (T20→20, ODI→50), **not** from `scheduled_overs` — because 15 matches are mislabelled with `scheduled_overs=50` for actual 20-over T20Is. Trusting scheduled_overs blindly would put their death overs at 38-50 (nonsense).
+- `sched` = `scheduled_overs` only if sane (`0 < scheduled_overs ≤ full_len`), else `full_len` — so shortened games flex correctly and mislabelled ones fall back to the format default.
+- `death_start_idx = sched − ceil(sched × frac)` (0-indexed). Full T20: 20−ceil(5)=15 → death = over_number ≥ 15 = overs 16-20 ✓. 16-over T20: 16−ceil(4)=12 → overs 13-16 ✓. Full ODI: 50−ceil(10)=40 → overs 41-50 ✓.
+
+**`gold.batting_by_phase` / `gold.bowling_by_phase`** — player × season × phase views over `fact_ball.over_phase`, conventions baked in, T20/ODI only (N/A excluded). Genie filters `over_phase` for phase questions.
+
+**Validated:** over_phase boundaries land exactly (full-T20 death = over_number 15-19); Kohli IPL powerplay SR reproduces a plausible 18-year arc (anchor era ~78-93 → transition ~107-140 → modern surge to ~175 in 2026) — original analysis no summary site readily shows, the payoff of ball-level data + correct per-innings phase classification.
+
+`fact_ball` schema change (over_phase) committed to git; clean full job run verified (bronze 2m / silver 4m / gold 35s).

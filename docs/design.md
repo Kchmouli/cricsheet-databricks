@@ -637,3 +637,32 @@ Phase analysis (powerplay / middle / death) required distinguishing two genuinel
 **Validated:** over_phase boundaries land exactly (full-T20 death = over_number 15-19); Kohli IPL powerplay SR reproduces a plausible 18-year arc (anchor era ~78-93 → transition ~107-140 → modern surge to ~175 in 2026) — original analysis no summary site readily shows, the payoff of ball-level data + correct per-innings phase classification.
 
 `fact_ball` schema change (over_phase) committed to git; clean full job run verified (bronze 2m / silver 4m / gold 35s).
+
+## 19. Batter-vs-bowler matchups (built) — the key differentiator
+
+The highest-value capability, because head-to-head records are what fans most want, are almost never cleanly published, and cannot be computed by a general AI (no ball-level data) or answered easily even by Statsguru. `fact_ball` carries both `batter_id` and `bowler_id` on every ball, so the matchup is directly computable.
+
+**`gold.batter_vs_bowler`** — grain: batter × bowler × **event_name** × format. Event in the grain lets matchup questions respect competition ("Kohli vs Bumrah *in IPL*") rather than silently broadening to all T20; omit the event filter to aggregate across competitions.
+
+**Conventions (batting + bowling interact):**
+- `balls` = balls faced (`is_ball_faced`, wides excluded — a wide isn't faced off that bowler).
+- `runs` = off the bat (`runs_batter`) — the batter's runs against that bowler (extras aren't the batter's).
+- `dismissals` = **bowler-credited** wickets where this bowler dismissed this batter: `is_bowler_wicket AND player_out_id = batter_id`. The `player_out_id = batter_id` guard ensures a non-striker dismissal (e.g. run-out, which isn't bowler-credited anyway) never counts. This is the subtlest convention — "out to bowler Y" ≠ "any wicket while Y bowled".
+- Super-overs excluded.
+
+**Query pattern (new shape):** matchup needs a **double join to `dim_player`** — one for the batter (batter_id), one for the bowler (bowler_id). Because the grain includes event+format, queries `sum()` and `GROUP BY` player name rather than reading a single row, so aggregating across a competition's formats is clean.
+
+**Validated:** Kohli-vs-Bumrah IPL T20 = 108 balls / 159 runs / 5 dismissals / 147 SR (plausible, matchup exists only in T20 as they're India team-mates). "Most IPL dismissals of Kohli" correctly surfaces Sandeep Sharma (7) — a real, well-known cricket storyline reconstructed from raw deliveries. Adding the event filter tightened counts vs the all-T20 version (e.g. Rabada 5→4 as one dismissal was an international), confirming the competition grain works.
+
+## Project status summary
+A validated medallion lakehouse (bronze VARIANT → silver conformed → gold star, 11.5M deliveries, 2008-2026) feeding a semantic layer of conventions-baked gold views, exposed through a natural-language agent (Databricks Genie). Genie answers, correctly and in plain English:
+- batting & bowling career/season stats (validated exact vs Cricinfo),
+- matches played, win % and outcome/impact splits (`player_match_summary`),
+- innings-phase analysis — powerplay/middle/death, format-aware, length-flexed (`batting_by_phase`/`bowling_by_phase`),
+- batter-vs-bowler matchups by competition (`batter_vs_bowler`).
+Seven+ domain conventions live in the views (never in ad-hoc SQL), so the agent is correct by construction. All notebooks + this doc are committed to github.com/Kchmouli/cricsheet-databricks; the daily job (bronze→silver→gold) runs from committed code and is verified green. Views are create-once DDL, re-run by hand on definition change. Differentiation: convention-correct, natural-language, ball-level analytical queries (phase evolution, matchups, outcome splits) that no summary site publishes and no general AI can compute.
+
+### Optional backlog (nothing unfinished)
+- Operational: weekly `all_json` reconciliation run + staleness assert + failure email (guards against silent data gaps like the CPL 2026 one that was caught and backfilled).
+- Enrichment: `venue_country` + home/away (pattern 6, "India vs overseas"); bowling-style enrichment (spin vs pace matchup splits).
+- Genie tuning: continue auditing generated SQL per pattern; the causation-hedge instruction mitigates but does not eliminate over-confident interpretation (a known text-to-SQL limit — numbers are reliable, editorialising needs a skeptical read).
